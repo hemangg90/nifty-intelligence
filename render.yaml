@@ -1,0 +1,19 @@
+# Render Blueprint: one always-on web service built from the Dockerfile. The database is an external Postgres (Neon or
+# Supabase), so no disk is needed: the research results live in the database, and the candle history stays on your machine.
+# Secrets are marked sync: false, so Render asks for them in its dashboard and they never enter git.
+services:
+  - type: web
+    name: nifty-intelligence
+    runtime: docker
+    plan: starter            # free web services sleep when idle, which stops the background traders
+    autoDeployTrigger: "off" # deploy by hand until you have checked the first one
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DHAN_CLIENT_ID
+        sync: false
+      - key: DHAN_ACCESS_TOKEN
+        sync: false
+      - key: TOKEN_KEEPER
+        value: "false"       # set to true only after you have put the TOTP credentials in the dashboard
