@@ -115,6 +115,83 @@ class CostAssumptions:
 
 
 @dataclass(frozen=True)
+class EvidencePolicy:
+    """Thresholds behind the evidence states (validation/evidence.py). There is no universal trade count that makes a
+    strategy reliable: the right size depends on return variability, the effect being tested, the dependence between
+    trades and the intended use. These are explicit, overridable research defaults; every assessment records the
+    values it was judged against so a state can always be traced to the policy that produced it."""
+
+    min_sessions: int = _int_env("EVIDENCE_MIN_SESSIONS", 120)  # trading days of valid history behind the backtest
+    min_trades: int = _int_env("EVIDENCE_MIN_TRADES", 100)
+    min_effective_trades: float = _float_env("EVIDENCE_MIN_EFFECTIVE_TRADES", 60.0)  # after correcting for dependence
+    min_trade_days: int = _int_env("EVIDENCE_MIN_TRADE_DAYS", 40)  # distinct sessions that contain a trade
+    min_oos_trades: int = _int_env("EVIDENCE_MIN_OOS_TRADES", 30)
+    confidence_level: float = _float_env("EVIDENCE_CONFIDENCE", 0.95)
+    min_net_expectancy_r: float = _float_env("EVIDENCE_MIN_NET_EXPECTANCY_R", 0.0)  # CI lower bound must exceed this
+    min_profit_factor: float = _float_env("EVIDENCE_MIN_PROFIT_FACTOR", 1.0)  # net of costs
+    max_drawdown_r: float = _float_env("EVIDENCE_MAX_DRAWDOWN_R", 25.0)  # magnitude, in net R
+    bootstrap_resamples: int = _int_env("EVIDENCE_BOOTSTRAP_RESAMPLES", 2000)
+    bootstrap_seed: int = _int_env("EVIDENCE_BOOTSTRAP_SEED", 20240101)  # fixed: results must be reproducible
+
+
+@dataclass(frozen=True)
+class SplitPolicy:
+    """How history is divided (validation/splits.py). Splits are chronological and by whole sessions. Purge drops the
+    last sessions of a segment (a trade opened there could resolve inside the next one); embargo drops the first
+    sessions of the next (indicator and regime state carried across the boundary). The holdout is for one final look."""
+
+    dev_fraction: float = _float_env("SPLIT_DEV_FRACTION", 0.6)
+    validation_fraction: float = _float_env("SPLIT_VALIDATION_FRACTION", 0.2)  # holdout gets the remainder
+    purge_sessions: int = _int_env("SPLIT_PURGE_SESSIONS", 1)
+    embargo_sessions: int = _int_env("SPLIT_EMBARGO_SESSIONS", 1)
+    walk_forward_folds: int = _int_env("WALK_FORWARD_FOLDS", 6)
+    holdout_look_budget: int = _int_env("HOLDOUT_LOOK_BUDGET", 20)  # distinct strategy looks before it is called consumed
+
+
+@dataclass(frozen=True)
+class RobustnessPolicy:
+    """Pass marks for the five robustness tests (validation/robustness.py). Explicit and overridable; each result
+    records the value it was judged on. A test with too little data returns None (not run), never a pass."""
+
+    param_steps: int = _int_env("ROBUST_PARAM_STEPS", 1)  # neighbours are +/- this many range steps, one parameter at a time
+    param_min_positive_share: float = _float_env("ROBUST_PARAM_MIN_POSITIVE_SHARE", 0.7)  # of neighbours with net expectancy > 0
+    regime_min_trades: int = _int_env("ROBUST_REGIME_MIN_TRADES", 30)  # a regime with fewer trades is reported, not judged
+    regime_worst_floor_r: float = _float_env("ROBUST_REGIME_WORST_FLOOR_R", 0.25)  # worst judged regime may lose at most this
+    cost_stress_multiple: float = _float_env("ROBUST_COST_STRESS_MULTIPLE", 2.0)  # must stay profitable at this x slippage
+    cost_scenarios: tuple = (1.0, 1.5, 2.0, 3.0)
+    min_periods: int = _int_env("ROBUST_MIN_PERIODS", 6)
+    min_positive_period_share: float = _float_env("ROBUST_MIN_POSITIVE_PERIOD_SHARE", 0.5)
+    top_periods: int = _int_env("ROBUST_TOP_PERIODS", 3)
+    max_top_period_profit_share: float = _float_env("ROBUST_MAX_TOP_PERIOD_PROFIT_SHARE", 0.6)
+    sequence_resamples: int = _int_env("ROBUST_SEQUENCE_RESAMPLES", 2000)
+    sequence_max_p_loss: float = _float_env("ROBUST_SEQUENCE_MAX_P_LOSS", 0.25)  # chance a resampled run ends below zero
+
+
+@dataclass(frozen=True)
+class GatedRankerPolicy:
+    """Eligibility gates and tier bands for ranking/gated_ranker.py. A failed gate cannot be offset by a good score."""
+
+    min_state: str = os.getenv("GATED_MIN_STATE", "RESEARCH QUALIFIED").strip().upper()  # evidence state at or above which a strategy is ranked
+    require_oos: bool = _bool_env("GATED_REQUIRE_OOS", True)  # out-of-sample result must exist and have non-negative expectancy
+    max_evidence_age_days: int = _int_env("GATED_MAX_EVIDENCE_AGE_DAYS", 30)  # older evidence is stale and does not count
+    regime_min_trades: int = _int_env("GATED_REGIME_MIN_TRADES", 30)  # below this the regime history says nothing either way
+    require_regime_evidence: bool = _bool_env("GATED_REQUIRE_REGIME_EVIDENCE", False)  # unknown regime fit blocks when True
+
+
+@dataclass(frozen=True)
+class ResearchPolicy:
+    """When the research scheduler re-runs validation and which results it accepts (research/scheduler.py, acceptance.py).
+    Improvement alone never promotes a strategy; bad news is accepted at once."""
+
+    interval_sec: int = _int_env("RESEARCH_INTERVAL_SEC", 3600)  # how often the scheduler looks for work
+    rerun_after_new_sessions: int = _int_env("RESEARCH_RERUN_AFTER_SESSIONS", 5)  # new data needed to re-run an unchanged strategy
+    min_new_sessions_for_promotion: int = _int_env("RESEARCH_PROMOTION_NEW_SESSIONS", 20)  # a higher state needs this much new data
+    deterioration_threshold_r: float = _float_env("RESEARCH_DETERIORATION_R", 0.05)  # fall in the out-of-sample lower bound that is flagged
+    market_closed_only: bool = _bool_env("RESEARCH_MARKET_CLOSED_ONLY", True)  # keep the CPU free for scans while the market is open
+    max_batch_runtime_sec: int = _int_env("RESEARCH_MAX_BATCH_SEC", 3600)  # no new strategy is started after this; the rest wait
+
+
+@dataclass(frozen=True)
 class DhanLimits:
     """Client-side budget for Dhan API calls. Dhan's published limits apply to the whole ACCOUNT:
     orders 10/s, data (candles) 5/s, quote (LTP) 1/s, non-trading 20/s, option chain 1 per 3 s
@@ -191,6 +268,30 @@ class Settings:
     # given explicitly (Strategy Library / Backtest Lab) are never scaled. Clamped to 0.2-3.0.
     stop_atr_scale: float = min(max(_float_env("STOP_ATR_SCALE", 1.0), 0.2), 3.0)
 
+    # Where a backtest trade is filled. "signal_close" (legacy) fills at the close of the bar that produced the signal,
+    # a price that was not achievable: the signal only exists once that bar has closed. "next_open" fills at the NEXT
+    # bar's open (same session only), monitors stop/target from that bar, forces an exit at the session's last bar, and
+    # skips signals whose next open is already through the stop/target. Use next_open for any research claim.
+    execution_timing: str = "next_open" if os.getenv("EXECUTION_TIMING", "signal_close").strip().lower() == "next_open" else "signal_close"
+
+    # Gated ranker (ranking/gated_ranker.py): when on, a strategy can only be selected if its stored validation evidence
+    # passes the eligibility gates; the legacy conditional-edge ranker then only refines among those. Off = unchanged.
+    # With no stored evidence every strategy is ineligible, so turning this on before running the validation suite
+    # (and storing its results) means NO TRADE everywhere. That is intended: no evidence, no ranking.
+    gated_ranker: bool = _bool_env("GATED_RANKER", False)
+
+    # Real option prices in the backtest (options/real_premium.py). Needs history fetched with
+    # scripts/backfill_options.py. Trades the history cannot price keep the modelled/assumed premium and are counted
+    # separately (metrics n_real_premium / n_modelled_premium / n_assumed_premium); nothing is blended silently.
+    option_history_in_backtest: bool = _bool_env("OPTION_HISTORY_IN_BACKTEST", False)
+    option_history_dir: str = os.getenv("OPTION_HISTORY_DIR", str(DATA_CACHE_DIR / "options_history"))
+
+    # Records the live option chain (every strike) to disk as it is fetched, to build the full-chain history that the
+    # rolling-strike endpoint cannot give. At most one snapshot per underlying per interval.
+    chain_recorder: bool = _bool_env("CHAIN_RECORDER", False)
+    chain_record_dir: str = os.getenv("CHAIN_RECORD_DIR", str(DATA_CACHE_DIR / "chain_snapshots"))
+    chain_record_interval_sec: float = _float_env("CHAIN_RECORD_INTERVAL_SEC", 300.0)
+
     # Heatmap mover selection (execution/mover_selection.py): when on, each auto paper trader scans only the N biggest
     # gainers and N biggest losers per group, and an up-mover takes only bullish setups, a down-mover only bearish.
     # Off = scan everything as before. The page "NSE Heatmap" can also switch it on for the running process.
@@ -242,6 +343,13 @@ class Settings:
 
     risk: RiskLimits = field(default_factory=RiskLimits)
     costs: CostAssumptions = field(default_factory=CostAssumptions)
+    evidence: EvidencePolicy = field(default_factory=EvidencePolicy)
+    splits: SplitPolicy = field(default_factory=SplitPolicy)
+    robustness: RobustnessPolicy = field(default_factory=RobustnessPolicy)
+    gated: GatedRankerPolicy = field(default_factory=GatedRankerPolicy)
+    research: ResearchPolicy = field(default_factory=ResearchPolicy)
+    # Background research scheduler (research/scheduler.py): re-validates strategies when enough new data has arrived.
+    research_scheduler: bool = _bool_env("RESEARCH_SCHEDULER", False)
     dhan: DhanLimits = field(default_factory=DhanLimits)
 
     @property

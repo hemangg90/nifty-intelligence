@@ -50,6 +50,13 @@ def main() -> int:
         print(f"  {table:<22} {n:>9,} rows to remove")
     print("  backtest runs by split now: " + ", ".join(f"{s}={n}" for s, n in kept))
     print("  orders, positions and fills are never touched")
+    # Research governance is an audit trail: append-only and small, so it is counted for information and never deleted.
+    for table in ("research_versions", "status_changes", "research_run_log", "strategy_evidence", "strategy_regime_stats", "holdout_ledger"):
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"  {table:<22} {n:>9,} rows kept (audit trail, never pruned)")
+        except sqlite3.OperationalError:
+            pass  # table not created yet
 
     if not any(counts.values()):
         print("Nothing to remove.")

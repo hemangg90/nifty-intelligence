@@ -95,6 +95,10 @@ def init_session_state() -> None:
     if "option_chain" not in st.session_state:
         st.session_state["option_chain"] = None
     DATA_KEEPER.start()  # idempotent: keeps every watchlist instrument's candles current in the background
+    if SETTINGS.research_scheduler:
+        from quant_intelligence.research.scheduler import RESEARCH_SCHEDULER
+
+        RESEARCH_SCHEDULER.start()  # idempotent; off unless RESEARCH_SCHEDULER=true
     render_engine_sidebar()
 
 

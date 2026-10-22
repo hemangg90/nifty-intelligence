@@ -26,7 +26,7 @@ timeframe = col2.selectbox("Timeframe", ["5min", "15min", "1min", "3min"])
 strategy_name = col3.selectbox("Strategy", list(STRATEGY_CLASSES.keys()))
 
 col4, col5 = st.columns(2)
-lookback_days = col4.slider("Total lookback (days)", 20, 365, 90)
+lookback_days = col4.slider("Total lookback (days)", 20, 730, 90)
 oos_fraction = col5.slider("Out-of-sample holdout (fraction of most recent data)", 0.1, 0.5, 0.25)
 
 strategy_cls = STRATEGY_CLASSES[strategy_name]
@@ -74,6 +74,11 @@ if run:
 if "last_backtest" in st.session_state:
     is_result = st.session_state["last_backtest"]["is"]
     oos_result = st.session_state["last_backtest"]["oos"]
+
+    st.caption("A single backtest is not evidence of an edge. The **Strategy Evidence** page shows what each strategy has demonstrated "
+               "after statistical validation, out-of-sample and robustness testing.")
+    with st.expander("Run manifest (what exactly produced these numbers)"):
+        st.json({"in_sample": is_result.manifest, "out_of_sample": oos_result.manifest})
 
     tab1, tab2, tab3 = st.tabs(["In-Sample", "Out-of-Sample", "Walk-Forward"])
 

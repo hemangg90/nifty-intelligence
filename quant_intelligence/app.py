@@ -31,7 +31,7 @@ with st.sidebar:
     st.header("Instrument & Data")
     st.session_state["instrument"] = st.text_input("Instrument", st.session_state["instrument"])
     st.session_state["timeframe"] = st.selectbox("Timeframe", ["5min", "15min", "1min", "3min"], index=0)
-    st.session_state["lookback_days"] = st.slider("Lookback window (days)", 10, 180, st.session_state["lookback_days"])
+    st.session_state["lookback_days"] = st.slider("Lookback window (days)", 10, 730, st.session_state["lookback_days"])
 
     if st.button("Refresh pipeline", type="primary"):
         with st.spinner("Running data -> features -> regime -> strategy ranking pipeline..."):

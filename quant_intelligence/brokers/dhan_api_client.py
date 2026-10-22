@@ -54,6 +54,16 @@ def clear_expiry_cache() -> None:
     _expiry_cache.clear()
 
 
+def _plain(text: str, limit: int = 160) -> str:
+    """A gateway error page (CloudFront answers 502/504 with a full HTML document) as one short line."""
+    import re
+
+    if "<" not in text:
+        return text
+    stripped = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
+    return stripped[:limit] + ("..." if len(stripped) > limit else "")
+
+
 class DhanApiClient:
     def __init__(self, client_id: str | None = None, access_token: str | None = None, base_url: str | None = None):
         self._follows_settings = client_id is None and access_token is None  # picks up renewed tokens by itself
@@ -82,7 +92,8 @@ class DhanApiClient:
         else:
             LIMITER.acquire(category)
 
-    def _request(self, method: str, path: str, body: dict | None = None, *, category: str, retry: bool = True) -> dict:
+    def _request(self, method: str, path: str, body: dict | None = None, *, category: str, retry: bool = True,
+                 timeout: float = 15) -> dict:
         """One Dhan call: breaker check -> spacing -> request -> 429 backoff/retry (reads only)."""
         if self._follows_settings:
             self.client_id, self.access_token = SETTINGS.dhan_client_id, SETTINGS.dhan_access_token
@@ -119,9 +130,9 @@ class DhanApiClient:
             self._throttle(category)
             url = f"{self.base_url}{path}"
             if method == "GET":
-                resp = requests.get(url, headers=self._headers(), timeout=15)
+                resp = requests.get(url, headers=self._headers(), timeout=timeout)
             else:
-                resp = requests.post(url, headers=self._headers(), json=body, timeout=15)
+                resp = requests.post(url, headers=self._headers(), json=body, timeout=timeout)
             try:
                 data = self._handle(resp)
             except DhanApiError as e:
@@ -146,8 +157,8 @@ class DhanApiClient:
     def _get(self, path: str, category: str = "non_trading", retry: bool = True) -> dict:
         return self._request("GET", path, category=category, retry=retry)
 
-    def _post(self, path: str, body: dict, category: str = "non_trading", retry: bool = True) -> dict:
-        return self._request("POST", path, body, category=category, retry=retry)
+    def _post(self, path: str, body: dict, category: str = "non_trading", retry: bool = True, timeout: float = 15) -> dict:
+        return self._request("POST", path, body, category=category, retry=retry, timeout=timeout)
 
     def _handle(self, resp: "requests.Response") -> dict:
         try:
@@ -155,7 +166,7 @@ class DhanApiClient:
         except ValueError:
             data = {}
         if not resp.ok:
-            message = data.get("remarks") or data.get("message") or resp.text or f"HTTP {resp.status_code}"
+            message = data.get("remarks") or data.get("message") or _plain(resp.text) or f"HTTP {resp.status_code}"
             raise DhanApiError(f"Dhan API error ({resp.status_code}): {message}", status_code=resp.status_code)
         return data
 

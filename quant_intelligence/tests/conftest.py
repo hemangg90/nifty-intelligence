@@ -12,7 +12,8 @@ import tempfile
 os.environ["LOGS_DIR"] = tempfile.mkdtemp(prefix="qi_test_logs_")  # tests must not write into the real logs/
 os.environ["OPTION_UNDERLYINGS"] = "NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,SENSEX"  # not whatever the developer put in .env
 for _flag in ("VOL_MODELS_ENABLED", "VOL_FEATURES_IN_ANALOGUES", "VOL_PREMIUM_MODEL_IN_BACKTEST", "VOL_TARGET_SIZING",
-              "VOL_RISK_CHECK", "VOL_IV_GATE"):
+              "VOL_RISK_CHECK", "VOL_IV_GATE", "OPTION_HISTORY_IN_BACKTEST", "CHAIN_RECORDER", "GATED_RANKER",
+              "RESEARCH_SCHEDULER"):
     os.environ[_flag] = "false"  # a developer's .env must not change test results
 os.environ["DHAN_CLIENT_ID"] = ""  # a developer's .env credentials/expired token must not leak into tests
 os.environ["DHAN_ACCESS_TOKEN"] = ""

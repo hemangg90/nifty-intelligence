@@ -36,7 +36,7 @@ class OIBuildupStrategy(BaseStrategy):
     }
 
     def generate_historical_setups(self, ohlcv: pd.DataFrame, features: pd.DataFrame) -> list[Setup]:
-        return []
+        return self.historical_chain_setups(ohlcv, features)
 
     def check_setup(self, market_state, recent_ohlcv: pd.DataFrame) -> Setup | None:
         return None

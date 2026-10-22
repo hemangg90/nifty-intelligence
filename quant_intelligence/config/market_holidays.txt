@@ -6,3 +6,45 @@
 # Examples (check against the official NSE/MCX holiday circular before relying on them):
 # 2027-03-22 NSE Holi
 # 2027-11-05 Diwali Laxmi Pujan
+
+# INFERRED from history, not copied from an NSE circular: no regular-session bars exist for any of 17 NSE instruments
+# (indices and stocks) from Dhan on these weekdays (2025-10-21 had only a 12-bar Muhurat session). Verify against the
+# official NSE holiday lists before relying on a date; they only affect how past data is audited.
+2024-11-01 NSE inferred closure
+2024-11-15 NSE inferred closure
+2024-11-20 NSE inferred closure
+2025-02-26 NSE inferred closure
+2025-03-14 NSE inferred closure
+2025-03-31 NSE inferred closure
+2025-04-10 NSE inferred closure
+2025-04-14 NSE inferred closure
+2025-04-18 NSE inferred closure
+2025-08-27 NSE inferred closure
+2025-10-21 NSE inferred closure
+2025-10-22 NSE inferred closure
+2025-11-05 NSE inferred closure
+2026-01-15 NSE inferred closure
+2026-03-03 NSE inferred closure
+2026-03-26 NSE inferred closure
+2026-03-31 NSE inferred closure
+2026-04-03 NSE inferred closure
+2026-04-14 NSE inferred closure
+2026-05-28 NSE inferred closure
+2026-06-26 NSE inferred closure
+2026-09-14 NSE inferred closure
+
+# INFERRED, same method (no regular-session bars from Dhan for NIFTY on these weekdays); they match the NSE holidays I
+# recall for 2023-24 and 2026-10-20, but verify against the NSE circulars. Added when the history was extended to 3 years.
+2023-10-24 NSE Dussehra
+2023-11-14 NSE Diwali Balipratipada
+2023-11-27 NSE Gurunanak Jayanti
+2024-01-22 NSE Special closure
+2024-03-08 NSE Mahashivratri
+2024-03-25 NSE Holi
+2024-03-29 NSE Good Friday
+2024-04-11 NSE Eid-ul-Fitr
+2024-04-17 NSE Ram Navami
+2024-05-20 NSE Lok Sabha election
+2024-06-17 NSE Bakri Eid
+2024-07-17 NSE Muharram
+2026-10-20 NSE Diwali Laxmi Pujan

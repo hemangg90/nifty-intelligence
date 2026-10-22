@@ -58,6 +58,10 @@ class ChainSnapshot:
     expiry: str
     spot_price: float
     strikes: list[StrikeRow] = field(default_factory=list)
+    # A snapshot rebuilt from rolling-strike history holds only the strikes near the money, so whole-chain totals such as
+    # total_pcr are near-the-money figures, not the live whole-chain ones. `partial` says so; live snapshots are complete.
+    partial: bool = False
+    source: str = "live"
 
     @property
     def atm_strike(self) -> float | None:

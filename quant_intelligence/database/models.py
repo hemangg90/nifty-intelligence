@@ -139,6 +139,7 @@ class BacktestRun(Base):
     split = Column(String(16))  # IN_SAMPLE / VALIDATION / OUT_OF_SAMPLE / WALK_FORWARD
     parameters = Column(JSON)
     metrics = Column(JSON)
+    manifest = Column(JSON)  # backtesting/manifest.RunManifest: data fingerprint, versions, assumptions
     created_at = Column(DateTime, default=utcnow)
 
 
@@ -318,6 +319,129 @@ class ResearchReport(Base):
     report_type = Column(String(32))
     content_json = Column(JSON)
     content_markdown = Column(Text)
+
+
+class HoldoutLedger(Base):
+    """Append-only record of every look at a final holdout. A holdout is only untouched until the first row with
+    event='EVALUATED' exists; repeated looks at it (by any strategy) are what make it stop being a clean test."""
+
+    __tablename__ = "holdout_ledger"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=utcnow)
+    event = Column(String(16), nullable=False)  # REGISTERED | EVALUATED
+    instrument = Column(String(32), nullable=False)
+    timeframe = Column(String(16), nullable=False)
+    holdout_start = Column(Date)
+    holdout_end = Column(Date)
+    holdout_fingerprint = Column(String(64), nullable=False)  # sha256 of the holdout bars
+    strategy = Column(String(64))
+    strategy_version = Column(String(16))
+    config_hash = Column(String(64))
+    n_trades = Column(Integer)
+    net_expectancy_r = Column(Float)
+
+
+class StrategyEvidence(Base):
+    """Append-only snapshot of what the validation suite concluded about one strategy on one instrument and timeframe.
+    The gated ranker reads the latest row; older rows stay so a change of verdict is traceable."""
+
+    __tablename__ = "strategy_evidence"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=utcnow)
+    strategy = Column(String(64), nullable=False)
+    strategy_version = Column(String(16))
+    instrument = Column(String(32), nullable=False)
+    timeframe = Column(String(16), nullable=False)
+    state = Column(String(32), nullable=False)  # EvidenceState value
+    config_hash = Column(String(64))
+    dataset_fingerprint = Column(String(64))
+    summary = Column(JSON)  # see validation/evidence_store.snapshot_from_validation
+
+
+class ResearchVersion(Base):
+    """Immutable snapshot of the accepted leaderboard for one instrument and timeframe, written whenever an accepted
+    verdict changes. Rows are only ever appended; the latest row is the current accepted version."""
+
+    __tablename__ = "research_versions"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=utcnow)
+    instrument = Column(String(32), nullable=False)
+    timeframe = Column(String(16), nullable=False)
+    version_no = Column(Integer, nullable=False)  # 1, 2, 3 ... per instrument and timeframe
+    batch_id = Column(String(32))
+    dataset_fingerprint = Column(String(64))
+    data_end = Column(Date)
+    policy_hash = Column(String(16))
+    leaderboard = Column(JSON)  # [{strategy, strategy_version, state, net_expectancy_r, ci_low, oos, ...}]
+    notes = Column(Text)
+
+
+class StatusChange(Base):
+    """Append-only log of every change to a strategy's accepted evidence state, with the reason. Demotions and removals
+    from eligibility are rows here, never silent edits."""
+
+    __tablename__ = "status_changes"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=utcnow)
+    instrument = Column(String(32), nullable=False)
+    timeframe = Column(String(16), nullable=False)
+    strategy = Column(String(64), nullable=False)
+    kind = Column(String(24), nullable=False)  # NEW | PROMOTION | DEMOTION | DETERIORATION
+    from_state = Column(String(32))
+    to_state = Column(String(32), nullable=False)
+    reason = Column(Text)
+    batch_id = Column(String(32))
+    research_version_id = Column(Integer)
+
+
+class ResearchRunLog(Base):
+    """One row per scheduled attempt on a (strategy, instrument, timeframe): what ran, what it concluded, whether the
+    verdict was accepted, and why not if it was not. This is the Backtest Control Center's source."""
+
+    __tablename__ = "research_run_log"
+
+    id = Column(Integer, primary_key=True)
+    started_at = Column(DateTime, default=utcnow)
+    finished_at = Column(DateTime)
+    batch_id = Column(String(32))
+    instrument = Column(String(32), nullable=False)
+    timeframe = Column(String(16), nullable=False)
+    strategy = Column(String(64), nullable=False)
+    strategy_version = Column(String(16))
+    outcome = Column(String(24), nullable=False)  # COMPLETED | FAILED | AWAITING_DATA | DEFERRED
+    state = Column(String(32))
+    decision = Column(String(24))  # NEW | REFRESH | PROMOTION | DEMOTION | DETERIORATION | PROMOTION_HELD
+    accepted = Column(Boolean)
+    detail = Column(Text)
+    runtime_sec = Column(Float)
+    dataset_fingerprint = Column(String(64))
+    data_end = Column(Date)
+    policy_hash = Column(String(16))
+
+
+class StrategyRegimeStat(Base):
+    """Net expectancy of a strategy within one market condition, from one validation run. Rows are appended, never
+    updated, so how a strategy behaved in a regime at a given time stays reproducible."""
+
+    __tablename__ = "strategy_regime_stats"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=utcnow)
+    strategy = Column(String(64), nullable=False)
+    instrument = Column(String(32), nullable=False)
+    timeframe = Column(String(16))
+    dimension = Column(String(24), nullable=False)  # regime | trend | volatility | gap
+    label = Column(String(32), nullable=False)
+    n_trades = Column(Integer)
+    net_expectancy_r = Column(Float)
+    ci_low = Column(Float)
+    ci_high = Column(Float)
+    run_id = Column(String(32))
+    config_hash = Column(String(64))
 
 
 class VolForecastRow(Base):

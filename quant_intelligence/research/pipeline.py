@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from quant_intelligence.backtesting.engine import run_backtest, BacktestResult
+from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.data.data_manager import DataManager
 from quant_intelligence.features.feature_engine import compute_features
 from quant_intelligence.utils.market_profile import profile_for
@@ -49,6 +50,9 @@ class PipelineOutput:
     strategy_intel: list[StrategyIntelligence]
     ranking: RankingDecision
     data_quality_issues: list = field(default_factory=list)
+    # Populated only when GATED_RANKER is on: per-strategy gate results and the ungated choice, for the dashboard.
+    decisions: list = field(default_factory=list)
+    legacy_ranking: RankingDecision | None = None
 
 
 def run_pipeline(
@@ -118,6 +122,16 @@ def run_pipeline(
         scores.append(assessment.score)
 
     ranking = rank_and_select(scores, data_quality_status, allow_tie_break=True)
+    decisions: list = []
+    legacy_ranking = None
+    if SETTINGS.gated_ranker:
+        from quant_intelligence.ranking.gated_ranker import gated_rank
+
+        gated = gated_rank(strategies, scores, instrument, timeframe, data_quality_status, regime_label,
+                           market_state=market_state, recent_ohlcv=ohlcv.tail(5))
+        legacy_ranking, ranking, decisions = gated.legacy, gated.ranking, gated.decisions
+        log_event("pipeline", f"Gated ranker: {sum(d.eligible for d in decisions)} of {len(decisions)} strategies eligible "
+                              f"(ungated pick: {legacy_ranking.selected_strategy})", level="INFO")
     quality_issues = list(metadata.get("quality_report", {}).get("issues", []))
     if ranking.is_no_trade and data_quality_status != "OK" and quality_issues:
         # "Data quality is DEGRADED" alone does not tell the user what to fix; add the actual findings.
@@ -142,6 +156,8 @@ def run_pipeline(
         strategy_intel=strategy_intel,
         ranking=ranking,
         data_quality_issues=quality_issues,
+        decisions=decisions,
+        legacy_ranking=legacy_ranking,
     )
 
 

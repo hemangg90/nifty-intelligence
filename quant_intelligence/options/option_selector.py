@@ -137,7 +137,11 @@ def _fetch_chain_uncached(client, underlying: str, expiry_preference: str) -> Ch
             break
     expiry = resolve_expiry(expiries, expiry_preference)
     raw = client.get_option_chain(security_id, info["seg"], expiry)
-    return parse_option_chain(underlying, expiry, raw)
+    snapshot = parse_option_chain(underlying, expiry, raw)
+    from quant_intelligence.options.chain_recorder import record_snapshot
+
+    record_snapshot(snapshot)  # no-op unless CHAIN_RECORDER is on; never raises
+    return snapshot
 
 
 def select_contract(

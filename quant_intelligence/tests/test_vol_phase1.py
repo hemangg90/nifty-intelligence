@@ -228,7 +228,7 @@ def test_flags_off_means_the_fixed_assumption_exactly():
 
 
 def test_premium_model_prices_an_atm_option_with_time_value_and_leaves_no_look_ahead():
-    df = gbm_ohlc(n_days=30, sigma_annual=0.20, start="2026-08-17")
+    df = gbm_ohlc(n_days=30, sigma_annual=0.20, start="2026-08-03")
     model = BacktestPremiumModel(df, "NIFTY")
     entry_ts = df["timestamp"].iloc[75 * 20 + 10]
     exit_ts = df["timestamp"].iloc[75 * 20 + 16]
@@ -258,7 +258,7 @@ def test_premium_model_returns_none_when_it_cannot_price():
 
 
 def test_model_premium_flows_into_costs_and_r():
-    df = gbm_ohlc(n_days=30, sigma_annual=0.20, start="2026-08-17")
+    df = gbm_ohlc(n_days=30, sigma_annual=0.20, start="2026-08-03")
     model = BacktestPremiumModel(df, "NIFTY")
     i = 75 * 20 + 10
     spot = float(df["close"].iloc[i])
@@ -278,7 +278,7 @@ def test_run_backtest_applies_the_model_only_when_the_flag_is_on(monkeypatch):
     from quant_intelligence.features.feature_engine import compute_features
     from quant_intelligence.strategies.base_strategy import BaseStrategy
 
-    df = gbm_ohlc(n_days=30, sigma_annual=0.20, start="2026-08-17")
+    df = gbm_ohlc(n_days=30, sigma_annual=0.20, start="2026-08-03")
     feats = compute_features(df)
 
     class EveryNth(BaseStrategy):

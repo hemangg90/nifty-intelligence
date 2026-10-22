@@ -566,6 +566,24 @@ which stops the background traders - "run until I stop it" cannot be guaranteed 
 requires a whitelisted static IP for *order* APIs, which the cloud does not provide (data APIs are fine).
 A `.devcontainer/` is included for Codespaces.
 
+### Deploying with the research dashboard
+
+The *Strategy Evidence* page reads the database, not the candle files, so a deployment shows the research results as
+long as they are in the database it points at. The history itself (`data_cache/`, over 1 GB with the option history)
+is gitignored and stays on your machine. Recommended flow:
+
+1. Create a hosted Postgres (see *Database* below) and set `DATABASE_URL` to it in the app's secrets.
+2. On your own machine, with the same `DATABASE_URL` in `.env`, run `python scripts/run_research.py NIFTY --force`.
+   The evidence, status changes and research versions are written straight to Postgres, and the deployed app shows
+   them. (`scripts/migrate_db.py` copies trading history only, not the research tables.)
+3. Rerun it whenever you extend the history. The deployed app cannot run the long backtests itself: it has no candles.
+4. Set `OPTION_HISTORY_IN_BACKTEST`, `GATED_RANKER` and `RESEARCH_SCHEDULER` on the host only when it has the data
+   to back them. They all default to off.
+
+For an always-on host, the `Dockerfile` runs the app on `$PORT` (Render, Railway, Fly.io or a VPS). Put the Dhan
+credentials and `DATABASE_URL` in the host's environment variables, never in the image, and mount a volume on
+`/app/data_cache` if you want the candle cache to survive restarts. Vercel cannot run Streamlit.
+
 ## Project layout
 
 ```
@@ -758,6 +776,101 @@ temporary database and log directory and never write to your real ones, nor star
   spread. Sold-option margin is not modelled. Only holidays listed in `market_holidays.txt` (plus the fixed-date ones) are modelled.
 - **Live trading is unproven** against a funded account.
 - **Paper state is in memory** (restored from the database on restart for the current day only).
+
+## Research rigor (evidence-gated pipeline, in progress)
+
+- **History and data quality:** `python scripts/backfill_history.py NIFTY --years 5` extends the candle cache backward
+  and forward and audits it (`data/quality_gates.py`: session completeness, gaps, outliers, dead-volume runs, plus a
+  dataset fingerprint). It records how far back Dhan actually serves. Needs a valid Dhan token.
+- **Rules:** `strategies/rules.py` states each strategy's entry, exit, stop, target, session, re-entry and parameter
+  ranges as the code implements them; `tests/test_strategy_rules.py` keeps them in step with the registry.
+- **No look-ahead:** `tests/test_no_lookahead.py` truncates the data and checks every price-action strategy's signals
+  (and the features) are unchanged by later bars. A canary strategy that peeks at the future must fail it.
+- **Execution timing:** by default a backtest fills at the signal bar's own close, a price that was not achievable
+  (legacy, kept so past results stay comparable). `EXECUTION_TIMING=next_open` fills at the next bar's open, counts the
+  fill bar's range, flattens at the session's last bar and skips signals with no honest fill (reported as
+  `n_unexecutable`). It changes more than the fill price, so compare results rather than assuming it is pessimistic.
+  Use it for any research claim.
+- **Reproducibility:** every run carries a manifest (`backtesting/manifest.py`: dataset fingerprint, strategy version,
+  parameters, execution and cost assumptions, engine version, `config_hash`), stored in `backtest_runs.manifest`.
+  Metrics report gross (`gross_pnl_total`) and net (`net_pnl_total`) separately.
+
+- **Statistical validation** (`quant_intelligence/validation/`): `metrics.py` (win rate, average win/loss, net expectancy
+  `E = pW - (1-p)L - C`, profit factor, drawdown, exposure, frequency, volatility, monthly variability),
+  `uncertainty.py` (expectancy interval = the wider of a stationary block bootstrap and an effective-sample-size
+  interval; Wilson win-rate interval; effective N discounted for same-session clustering and serial correlation) and
+  `evidence.py`. A backtest lands in one of six states, never a bare score: INSUFFICIENT DATA, INSUFFICIENT SAMPLE,
+  VALIDATION FAILED, RESEARCH QUALIFIED, ROBUSTNESS TESTING, VALIDATED FOR RESEARCH. The labels describe evidence under a
+  documented policy (`EvidencePolicy` in `config/settings.py`, overridable with `EVIDENCE_*` variables) and never
+  promise profit. `validation.report.validate_backtest(result, ohlcv, quantity)` returns metrics, uncertainty and state.
+
+- **Splits, walk-forward, holdout, robustness:** `validation.suite.run_validation_suite(StrategyClass, ohlcv, features,
+  instrument)` cuts history chronologically by whole sessions into development / validation / holdout (60/20/20, with
+  purge and embargo sessions at each boundary; `SplitPolicy`, `SPLIT_*` variables), judges the in-sample gates on
+  development and out-of-sample on validation, and runs a session-aligned walk-forward (`walk_forward.py`; no
+  parameter is ever fitted, so folds are consecutive cold runs and what they measure is consistency over time).
+  The five robustness tests (`robustness.py`, pass marks in `RobustnessPolicy`) run only once the earlier gates have
+  passed: parameter sensitivity (neighbours of the defaults, never the best in-sample setting), regime sensitivity
+  (labels from information at the signal bar; the strategy x regime table is appended to `strategy_regime_stats`),
+  cost stress (slippage scaled up; the break-even multiple is exact), period consistency (monthly) and sequence
+  analysis (block-bootstrapped drawdown). A test with too little data is "not run", never a pass.
+- **The holdout is for one final look.** It is only evaluated (`include_holdout=True`) for a strategy that would
+  otherwise be VALIDATED FOR RESEARCH, and every look is appended to `holdout_ledger`. A holdout seen by too many
+  strategies, or twice by the same configuration, is reported as consumed. Fresh data gives a fresh holdout.
+- **Gated ranker** (`GATED_RANKER=true`, default off; `ranking/gated_ranker.py`). Evidence comes before score. The suite
+  stores each verdict in `strategy_evidence` (`run_validation_suite(..., persist=True)`). When the flag is on, a strategy
+  can be selected only if its latest stored evidence passes every gate: live data quality OK, evidence current (same
+  strategy version, within `GATED_MAX_EVIDENCE_AGE_DAYS`), state at least `GATED_MIN_STATE`, net-edge interval above
+  zero, a positive out-of-sample result, drawdown within policy and no failed robustness test. Eligible strategies are
+  ordered in tiers (evidence state, then bands of out-of-sample lower bound, walk-forward consistency, parameter
+  stability and cost sensitivity), never a weighted sum. The legacy ranker still supplies "does it fit right now" and
+  breaks ties inside the top tier. Each strategy gets separate `research_status`, `compatibility`, `setup_status` and
+  `final_status` fields, and the best final status is `SETUP_VALID_PENDING_RISK`: the ranker never grants permission, the
+  risk engine still evaluates every order. **With no stored evidence every strategy is ineligible and the answer is NO
+  TRADE**, so run the suite with `persist=True` before switching the flag on.
+- **Research scheduler and reports** (`RESEARCH_SCHEDULER=true` starts a background thread; or run
+  `python scripts/run_research.py NIFTY` by hand, `--status` to look without running). Per instrument and timeframe it
+  loads the cached candles, applies the quality gate (a failed or missing history is logged `AWAITING_DATA`, nothing is
+  run), re-validates only the strategies that are stale (never run at this strategy version, run under different
+  thresholds, or `RESEARCH_RERUN_AFTER_SESSIONS` = 5 new sessions of data since), always with next-open fills and never
+  touching the holdout, and defers while the market is open. Each verdict then meets the acceptance rules
+  (`research/acceptance.py`): **a fall is accepted at once** (DEMOTION), a drop of more than 0.05 R in the out-of-sample
+  lower bound is flagged (DETERIORATION), and **a higher state is accepted only after 20 new sessions of data under
+  unchanged thresholds**, otherwise it is logged PROMOTION_HELD and the accepted verdict stands. Improvement within a
+  state is a REFRESH and never a promotion. The gated ranker reads only accepted verdicts. Everything is append-only:
+  `research_versions` (the accepted leaderboard each time it changes), `status_changes` (with reasons),
+  `research_run_log` (every attempt: completed, failed, awaiting data, deferred), plus a Markdown/JSON run report per
+  batch in `research_reports`. `prune_research_tables.py` lists these tables and never deletes from them.
+- **Strategy Evidence page** (`pages/17_Strategy_Evidence.py`; the older "Strategy Intelligence" page is the analogue
+  drill-down). Four tabs over the stored, accepted evidence, with the logic in `research/dashboard_data.py` and the
+  drawing in `ui/evidence_views.py`: a **leaderboard** (state, net R with its interval, profit factor, drawdown,
+  out-of-sample, walk-forward, robustness, regime fit, setup, final status, evidence age; with a banner that sorting is not
+  a performance guarantee), **research detail** per strategy (equity and drawdown with the out-of-sample stretch marked,
+  trade distribution, monthly and per-condition breakdowns, parameter-sensitivity and cost-stress charts, walk-forward
+  folds, robustness results, trade records, rules and known limitations), a **backtest control center** (completed,
+  failed and awaiting-data runs, current research version, last success, data coverage and quality, held promotions,
+  status changes, and buttons to run stale research or re-run everything in the background) and a **ranking
+  explanation** (research rank with the strategies just above and below, gates passed and failed, fit with the current
+  market, setup, and what remains uncertain). Curves and tables come from a compact detail block stored with each
+  verdict (`validation/detail.py`); where a piece was not computed the page says so. The Backtest Lab now shows each run's
+  manifest.
+- **Option data from Dhan** (`python scripts/backfill_options.py NIFTY --days 365`; needs a valid token and a data plan
+  with expired-options data). It uses `POST /v2/charts/rollingoption` (30 days per request, ATM-relative strikes, with
+  OHLC, volume, IV, OI, strike and spot) and stores one parquet per expiry flag, option type and strike offset under
+  `data_cache/options_history/<SYMBOL>/`. The response handling follows Dhan's documentation and has **not been checked
+  against a live response from this account yet**; the parser refuses shapes it does not recognise. Two uses:
+  - `OPTION_HISTORY_IN_BACKTEST=true` prices each bought ATM option from the stored history (entry at the fill bar's open
+    under `next_open`, exit at the close of the same strike; delta read from the neighbouring strikes). Trades it cannot
+    price keep the modelled/assumed premium and are counted apart (`n_real_premium`, `n_modelled_premium`,
+    `n_assumed_premium`); the manifest records the option-data fingerprint. No bid/ask in the data, so spread stays assumed.
+  - `options/historical_chain.py` rebuilds causal near-the-money `ChainSnapshot`s so PCR Extreme, OI Buildup and Unusual
+    Volume Fade can be replayed (`run_validation_suite(..., chain_history=HistoricalChain(history))`). These are proxies:
+    only the stored strikes, so PCR is a near-the-money ratio, not the whole-chain one the thresholds were written for.
+    The result is flagged `proxy_data` and can never reach VALIDATED FOR RESEARCH. IV Crush Premium Writer sells premium
+    and has no sell-side backtest model, so it stays INSUFFICIENT DATA.
+  - `CHAIN_RECORDER=true` saves the live full chain (every strike) as it is fetched, at most once per
+    `CHAIN_RECORD_INTERVAL_SEC` per underlying, to `data_cache/chain_snapshots/`. It makes no extra Dhan requests.
+    This is the only route to a true whole-chain history, and it accumulates from the day it is switched on.
 
 ## Disclaimer
 

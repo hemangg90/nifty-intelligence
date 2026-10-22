@@ -25,8 +25,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from quant_intelligence.backtesting.timing import timing_override
 from quant_intelligence.config.settings import SETTINGS
-from quant_intelligence.strategies.base_strategy import BaseStrategy, TradeResult
+from quant_intelligence.strategies.base_strategy import BaseStrategy, TradeResult, next_open_fill
 
 
 @dataclass
@@ -37,6 +38,7 @@ class BacktestResult:
     split: str
     trades: list[TradeResult] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
+    manifest: dict = field(default_factory=dict)  # backtesting/manifest.RunManifest as a dict
 
 
 MIN_PREMIUM = 0.05  # an option cannot trade below one tick
@@ -50,7 +52,7 @@ def market_for(instrument: str | None) -> str:
 
 
 def _apply_costs(
-    trade: TradeResult, entry_price: float, quantity: int, market: str = "NSE"
+    trade: TradeResult, entry_price: float, quantity: int, market: str = "NSE", costs=None
 ) -> tuple[float, float, float, float]:
     """Return (commissions, fees, slippage, net_pnl) for trading this setup as an OPTION.
 
@@ -63,7 +65,7 @@ def _apply_costs(
 
     commissions = brokerage; fees = STT + exchange + SEBI + stamp + GST; slippage in premium units.
     """
-    c = SETTINGS.costs
+    c = costs or SETTINGS.costs  # `costs`: an override for stress scenarios (validation/robustness.py)
     delta = c.assumed_option_delta
     model = (trade.setup.meta or {}).get("bs_premium")  # set by run_backtest when VOL_PREMIUM_MODEL_IN_BACKTEST
     if model:
@@ -93,15 +95,19 @@ def _apply_costs(
     return commissions, fees, slippage_amount, net_pnl
 
 
+def trade_risk(trade: TradeResult, quantity: int) -> float:
+    """Rupees at risk on a trade: the option premium lost if the underlying reaches the stop."""
+    model = (trade.setup.meta or {}).get("bs_premium")
+    if model:
+        return model["risk"] * quantity
+    return SETTINGS.costs.assumed_option_delta * abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
+
+
 def net_r_multiple(trade: TradeResult, quantity: int, market: str = "NSE") -> float:
     """Net-of-cost R: option P&L after all costs / amount risked (delta x stop distance x quantity).
     This, not the gross `TradeResult.r_multiple`, is what a strategy actually earns."""
     net_pnl = _apply_costs(trade, trade.setup.entry_price, quantity, market)[3]
-    model = (trade.setup.meta or {}).get("bs_premium")
-    if model:
-        risk = model["risk"] * quantity  # premium lost if the underlying reaches the stop
-    else:
-        risk = SETTINGS.costs.assumed_option_delta * abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
+    risk = trade_risk(trade, quantity)
     return net_pnl / risk if risk > 0 else 0.0
 
 
@@ -122,6 +128,8 @@ def run_backtest(
     quantity: int = 50,
     max_holding_bars: int = 75,
     persist: bool = True,
+    timeframe: str = "5min",
+    data_source: str = "",
 ) -> BacktestResult:
     run_id = f"BT-{uuid.uuid4().hex[:12]}"
 
@@ -132,17 +140,31 @@ def run_backtest(
     trades: list[TradeResult] = []
     next_available_idx = 0
     premium_model = _premium_model(ohlcv, instrument)
+    timing = timing_override() or SETTINGS.execution_timing
+    real_model = _real_premium_model(ohlcv, instrument, timeframe, timing)
+    sources = {"dhan_history": 0, "modelled": 0, "assumed": 0}
+    n_unexecutable = 0  # signals with no honest fill (last bar of the session, open already through stop/target)
 
     for setup in setups:
         entry_idx = ts_to_idx.get(setup.timestamp)
         if entry_idx is None or entry_idx < next_available_idx:
             continue  # skip overlapping setups while a trade would still be open
+        if timing == "next_open" and next_open_fill(setup, ohlcv, entry_idx) is None:
+            n_unexecutable += 1
+            continue
 
-        result = strategy.simulate_trade(setup, ohlcv, entry_idx, max_holding_bars=max_holding_bars)
-        if premium_model is not None:
-            priced = premium_model.price(result)
-            if priced:
-                result.setup.meta = {**(result.setup.meta or {}), "bs_premium": priced}
+        result = strategy.simulate_trade(setup, ohlcv, entry_idx, max_holding_bars=max_holding_bars, execution_timing=timing)
+        priced, source = None, "assumed"
+        if real_model is not None:
+            priced, source = real_model.price(result), "dhan_history"
+        if not priced and premium_model is not None:
+            priced, source = premium_model.price(result), "modelled"
+        if priced:
+            result.setup.meta = {**(result.setup.meta or {}), "bs_premium": priced, "premium_source": source}
+        else:
+            source = "assumed"
+            result.setup.meta = {**(result.setup.meta or {}), "premium_source": source}
+        sources[source] += 1
         trades.append(result)
 
         exit_idx = ts_to_idx.get(result.exit_timestamp, entry_idx + max_holding_bars)
@@ -151,10 +173,52 @@ def run_backtest(
     run = BacktestResult(run_id=run_id, strategy_name=strategy.name, instrument=instrument, split=split, trades=trades)
     market = market_for(instrument)
     run.metrics = _compute_run_metrics(trades, quantity, market)
+    run.metrics["n_signals"] = len(setups)
+    run.metrics["n_unexecutable"] = n_unexecutable
+    run.metrics["execution_timing"] = timing
+    run.metrics.update({"n_real_premium": sources["dhan_history"], "n_modelled_premium": sources["modelled"],
+                        "n_assumed_premium": sources["assumed"],
+                        "real_premium_share": sources["dhan_history"] / len(trades) if trades else 0.0})
+    try:
+        from quant_intelligence.backtesting.manifest import build_manifest
+
+        run.manifest = build_manifest(strategy, ohlcv, instrument, split, quantity, max_holding_bars,
+                                      timeframe=timeframe, data_source=data_source).as_dict()
+    except Exception as e:  # a manifest problem must never stop a research run
+        from quant_intelligence.utils.logging_utils import log_event
+
+        log_event("backtest", f"Could not build the run manifest: {e}", level="WARNING")
+    if real_model is not None and run.manifest:
+        run.manifest["option_premium"] = {"source": "dhan_history", "history_fingerprint": real_model.history.fingerprint(),
+                                          **real_model.coverage()}
 
     if persist:
         _persist_backtest(run, strategy, ohlcv, features, feat_by_ts, quantity, market)
     return run
+
+
+def _real_premium_model(ohlcv: pd.DataFrame, instrument: str, timeframe: str, timing: str):
+    """Real option prices (OPTION_HISTORY_IN_BACKTEST) when stored history overlaps the data; None otherwise. A flag that is
+    on with no usable history is logged once per run and the backtest keeps its modelled/assumed premium."""
+    if not SETTINGS.option_history_in_backtest or len(ohlcv) == 0:
+        return None
+    try:
+        from quant_intelligence.options.real_premium import RealPremiumModel, history_covers, load_history_for
+        from quant_intelligence.utils.timeframe import parse_timeframe_minutes
+
+        history = load_history_for(instrument)
+        if not history_covers(history, ohlcv):
+            from quant_intelligence.utils.logging_utils import log_event
+
+            log_event("backtest", f"OPTION_HISTORY_IN_BACKTEST is on but no option history overlaps {instrument}; "
+                                  "using the modelled/assumed premium", level="WARNING")
+            return None
+        return RealPremiumModel(history, parse_timeframe_minutes(timeframe), timing)
+    except Exception as e:
+        from quant_intelligence.utils.logging_utils import log_event
+
+        log_event("backtest", f"Real option prices unavailable for {instrument}: {e}", level="WARNING")
+        return None
 
 
 def _premium_model(ohlcv: pd.DataFrame, instrument: str):
@@ -179,9 +243,11 @@ def _compute_run_metrics(trades: list[TradeResult], quantity: int, market: str =
 
     r_multiples = np.array([t.r_multiple for t in trades])
     net_pnls = []
+    total_costs = 0.0
     for t in trades:
-        _, _, _, net_pnl = _apply_costs(t, t.setup.entry_price, quantity, market)
+        commissions, fees, slippage, net_pnl = _apply_costs(t, t.setup.entry_price, quantity, market)
         net_pnls.append(net_pnl)
+        total_costs += commissions + fees + slippage
     net_pnls = np.array(net_pnls)
 
     wins = r_multiples > 0
@@ -220,6 +286,8 @@ def _compute_run_metrics(trades: list[TradeResult], quantity: int, market: str =
         "avg_mae": float(np.mean([t.mae for t in trades])),
         "avg_holding_bars": float(np.mean([t.holding_period_bars for t in trades])),
         "net_pnl_total": float(net_pnls.sum()),
+        "gross_pnl_total": float(net_pnls.sum() + total_costs),  # option P&L before brokerage, charges and slippage
+        "total_costs": float(total_costs),
         "cost_adjusted_expectancy": float(net_pnls.mean()),
     }
 
@@ -237,7 +305,8 @@ def _persist_backtest(
                     run_id=run.run_id,
                     strategy_name=run.strategy_name,
                     instrument=run.instrument,
-                    timeframe=None,
+                    timeframe=(run.manifest or {}).get("timeframe"),
+                    manifest=run.manifest or None,
                     start_date=ohlcv["timestamp"].min() if len(ohlcv) else None,
                     end_date=ohlcv["timestamp"].max() if len(ohlcv) else None,
                     split=run.split,

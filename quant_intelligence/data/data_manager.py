@@ -174,7 +174,15 @@ class DataManager:
                 f"No real market data for {instrument} {timeframe}: {reasons}. "
                 "Set your Dhan credentials in the sidebar or add CSV files to data_cache/csv."
             )
-        _write_cache(df, cache_path)
+        # Keep older history: a rebuild asks for only the requested window, and replacing the file with it would
+        # silently discard a long backfill (e.g. after the token lapsed for over MAX_TAIL_GAP_DAYS).
+        existing = _read_cache(cache_path) if cache_path.exists() else None
+        if existing is not None and len(existing):
+            to_write = pd.concat([existing, df.assign(timestamp=pd.to_datetime(df["timestamp"]))], ignore_index=True)
+            to_write = to_write.drop_duplicates("timestamp", keep="last").sort_values("timestamp").reset_index(drop=True)
+        else:
+            to_write = df
+        _write_cache(to_write, cache_path)
         return self._finalize(df, instrument, timeframe, source)
 
     def _may_request(self, instrument: str, timeframe: str) -> bool:

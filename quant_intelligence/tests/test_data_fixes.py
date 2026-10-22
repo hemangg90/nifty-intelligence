@@ -130,6 +130,25 @@ def test_an_unreadable_cache_file_is_refetched_instead_of_crashing(tmp_path, mon
     assert len(pd.read_parquet(tmp_path / "BROKEN_5min.parquet")) > 0  # the bad file was replaced
 
 
+def test_a_rebuild_of_a_stale_cache_keeps_the_older_history(tmp_path, monkeypatch):
+    """Cache older than MAX_TAIL_GAP_DAYS is refetched for the requested window only; the long backfilled
+    history before that window must survive, not be replaced by it."""
+    monkeypatch.setattr(dm_module, "CACHE_DIR", tmp_path)
+    old = pd.date_range("2024-11-01 09:15", "2024-11-01 15:25", freq="5min")
+    pd.DataFrame({"timestamp": old, "open": 50.0, "high": 51.0, "low": 49.0, "close": 50.5, "volume": 5.0}).to_parquet(
+        tmp_path / "KEEP_5min.parquet", index=False)
+    new = pd.date_range("2026-10-01 09:15", "2026-10-01 15:25", freq="5min")
+    manager = dm_module.DataManager()
+    manager._fetch = lambda *a, **k: ("dhan", pd.DataFrame({
+        "timestamp": new, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0}))
+    end = dt.datetime(2026, 10, 1, 15, 31)
+    df, _ = manager.get_ohlcv("KEEP", "5min", end - dt.timedelta(days=3), end)
+    assert df["timestamp"].min() >= pd.Timestamp("2026-09-28")          # the caller still gets only its window
+    on_disk = pd.read_parquet(tmp_path / "KEEP_5min.parquet")
+    assert on_disk["timestamp"].min() == old[0] and on_disk["timestamp"].max() == new[-1]
+    assert len(on_disk) == len(old) + len(new) and not on_disk["timestamp"].duplicated().any()
+
+
 # ---------------------------------------------------------------- 3. single flight
 def test_two_callers_for_one_uncached_instrument_download_it_once(tmp_path, monkeypatch):
     monkeypatch.setattr(dm_module, "CACHE_DIR", tmp_path)
