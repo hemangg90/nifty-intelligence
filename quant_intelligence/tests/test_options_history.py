@@ -99,6 +99,29 @@ def test_unrecognised_shapes_are_refused_not_guessed(bars):
         parse_rolling_response(body, "CALL")
 
 
+def _evening(frame_bars, n):
+    """The first n bars of a frame re-timed to 18:00 IST on the same date (the Diwali Muhurat session)."""
+    f = option_frame(frame_bars.iloc[:n], "CALL", 0)
+    f["timestamp"] = f["timestamp"].dt.normalize() + pd.Timedelta(hours=18) + pd.to_timedelta([5 * i for i in range(n)], unit="min")
+    return f
+
+
+def test_muhurat_bars_beside_a_regular_day_are_dropped_not_fatal(bars):
+    """The real failure: 75 regular bars + 12 Muhurat bars is 86% in session, which stopped a whole series."""
+    day_bars = bars[bars["timestamp"].dt.date == bars["timestamp"].dt.date.iloc[0]]
+    regular = option_frame(day_bars, "CALL", 0)
+    evening = _evening(day_bars.assign(timestamp=day_bars["timestamp"] + pd.Timedelta(days=1)), 12)
+    f = pd.concat([regular, evening], ignore_index=True)
+    out = parse_rolling_response(response_body(f, "CALL"), "CALL")
+    assert len(out) == len(regular)
+    assert (out["timestamp"].dt.hour < 16).all()
+
+
+def test_a_muhurat_only_window_parses_to_no_bars(bars):
+    out = parse_rolling_response(response_body(_evening(bars, 12), "CALL"), "CALL")
+    assert len(out) == 0
+
+
 def test_timestamps_outside_the_session_are_refused(bars):
     f = option_frame(bars.iloc[:10], "CALL", 0)
     body = response_body(f, "CALL")

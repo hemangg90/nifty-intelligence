@@ -47,6 +47,8 @@ EMPTY_WINDOWS_TO_STOP = 2
 # Dhan sends a couple of prints after the close (15:30, 15:35) every day, about 2.6% of 5-minute bars, so the clock-basis check
 # cannot demand 98% as the candle adapter does. The wrong basis moves most bars out of the session, never just a few.
 MIN_IN_SESSION_FRACTION = 0.90
+MUHURAT_FROM_MIN, MUHURAT_TO_MIN = 17 * 60 + 30, 20 * 60     # evening window, IST
+SPECIAL_SESSION_MAX_BARS = 20     # the Diwali Muhurat session is about 12 five-minute bars, in the evening
 
 
 @dataclass(frozen=True)
@@ -80,14 +82,23 @@ class RollingResponseError(RuntimeError):
     pass
 
 
-def _to_ist(epoch_seconds: list, profile=None) -> pd.Series:
+def _to_ist(epoch_seconds: list, profile=None) -> pd.Series | None:
     """Naive IST timestamps. Dhan's epoch basis is verified from the data (bars must sit in the session), as the candle
-    adapter does; a shifted clock would silently corrupt everything keyed on time."""
+    adapter does; a shifted clock would silently corrupt everything keyed on time. The one-hour Diwali Muhurat evening
+    session is left out of that check (parse_rolling_response drops its bars): a window holding it was rejected as
+    'outside the session'. None means the window holds nothing but that session."""
     from quant_intelligence.data_adapters.dhan_adapter import _in_session_fraction
     from quant_intelligence.utils.market_profile import NSE
 
     profile = profile or NSE
     raw = pd.to_datetime(pd.Series(epoch_seconds, dtype="float64"), unit="s")
+    ist = raw + pd.Timedelta(hours=5, minutes=30)
+    minutes = ist.dt.hour * 60 + ist.dt.minute
+    evening = (minutes >= MUHURAT_FROM_MIN) & (minutes < MUHURAT_TO_MIN)
+    if evening.any() and (~evening).sum() == 0 and len(raw) <= SPECIAL_SESSION_MAX_BARS:
+        return None
+    if evening.any() and _in_session_fraction(ist[~evening], profile) >= MIN_IN_SESSION_FRACTION:
+        return ist
     for shift in (pd.Timedelta(hours=5, minutes=30), pd.Timedelta(0)):
         shifted = raw + shift
         if _in_session_fraction(shifted, profile) >= MIN_IN_SESSION_FRACTION:
@@ -115,7 +126,10 @@ def parse_rolling_response(body: dict, option_type: str, profile=None) -> pd.Dat
     n = len(side["timestamp"])
     if n == 0:
         return pd.DataFrame(columns=COLUMNS)
-    cols: dict[str, object] = {"timestamp": _to_ist(side["timestamp"], profile)}
+    stamps = _to_ist(side["timestamp"], profile)
+    if stamps is None:                             # a window holding only the evening Muhurat session has no regular bars
+        return pd.DataFrame(columns=COLUMNS)
+    cols: dict[str, object] = {"timestamp": stamps}
     for name in REQUIRED_DATA:
         arr = side.get(name)
         if arr is None:
